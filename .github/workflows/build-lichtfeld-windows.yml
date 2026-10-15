@@ -1,0 +1,78 @@
+# Build the GPLv3 LichtFeld Studio source without Windows developer tools locally.
+# Place this file at .github/workflows/build-lichtfeld-windows.yml
+name: Build LichtFeld 0.5.4 for Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable-windows:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_BUILD_TYPE: release
+      CUDA_PATH: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8
+      CUDA_PATH_V12_8: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8
+
+    steps:
+      - name: Checkout builder workflow
+        uses: actions/checkout@v4
+
+      - name: Download LichtFeld 0.5.4 source and submodules
+        shell: pwsh
+        run: |
+          git clone --branch v0.5.4 --depth 1 --recurse-submodules https://github.com/MrNeRF/LichtFeld-Studio.git source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install CUDA Toolkit 12.8 (build tools only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'cuda-toolkit.exe'
+          Invoke-WebRequest -Uri 'https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda_12.8.0_571.96_windows.exe' -OutFile $installer
+          $p = Start-Process -FilePath $installer -ArgumentList '-y -s -accepteula -toolkit -override -noDisplayDriver' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "CUDA installer failed with exit code $($p.ExitCode)" }
+          'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin' >> $env:GITHUB_PATH
+          'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\libnvvp' >> $env:GITHUB_PATH
+
+      - name: Install vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure Release portable build
+        shell: cmd
+        working-directory: source
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -B b -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_PORTABLE=ON -DBUILD_PYTHON_STUBS=OFF
+
+      - name: Compile
+        shell: cmd
+        working-directory: source
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build b -j 4
+
+      - name: Package portable application
+        shell: pwsh
+        working-directory: source
+        run: |
+          cmake --install b --prefix dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path 'dist\*' -DestinationPath "${{ github.workspace }}\LichtFeld-Studio-0.5.4-windows-portable.zip" -Force
+
+      - name: Save ZIP as downloadable workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LichtFeld-Studio-0.5.4-Windows
+          path: LichtFeld-Studio-0.5.4-windows-portable.zip
+          if-no-files-found: error
+          retention-days: 7
